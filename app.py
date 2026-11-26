@@ -170,6 +170,8 @@ if analyze_clicked:
     metric_cols[2].metric("Retrieved matches", result.get("evidence_summary", {}).get("matching_records", 0))
     if result.get("model_scope") == "whole_article":
         st.caption("The English classifier scores the complete article. Its score is model confidence, not the probability that the article is true. Retrieved fact-check evidence is shown separately.")
+    elif result.get("model_status") == "paused_noisy_training_labels":
+        st.caption("The English classifier is paused because its training labels failed a data-quality review. No result is inferred from an unreliable model score.")
     else:
         st.caption("Classifier score describes model confidence between learned classes. Evidence relevance describes text similarity. Neither is the probability a claim is true.")
 
@@ -195,6 +197,8 @@ if analyze_clicked:
                 st.info("Hindi classification is unavailable because the current training data does not support a reliable model. This assessment relies on retrieved fact-check evidence and may remain Unable to Assess.")
             elif language == "Hindi":
                 st.warning("The Hindi classifier is experimental and trained on a public benchmark. Its score is not a truth probability; review claim-level sources and unresolved claims carefully.")
+            elif result.get("model_status") == "paused_noisy_training_labels":
+                st.warning("English model predictions are paused: the training corpus contains mislabeled news examples. The app will use strong fact-check matches when available and otherwise return Unable to Assess, rather than present an unreliable real/fake label.")
             elif not result.get("model_available"):
                 st.warning("The English model could not be loaded. The assessment uses available retrieval evidence only.")
             if result.get("evidence_summary", {}).get("search_errors"):
@@ -275,4 +279,4 @@ if analyze_clicked:
     with method_tab:
         st.markdown("#### How analysis works")
         st.markdown("1. The English article model analyzes the complete pasted article using word 1–2 gram hashing features and Logistic Regression; its three-way decision uses thresholds selected on a validation split.  \n2. A rule-based screen separately selects factual-looking sentences and lists opinions/commentary or other skipped statements; extracted entities, dates, and quantities are literal text cues, not trained NER.  \n3. Search X-FACT against those candidate claims using text similarity, entity overlap, and quantity agreement. Optional Google Fact Check Tools API results are ranked the same way.  \n4. A search match is only related unless its wording/context is sufficiently close. Fact-check ratings stay separate from the article model; strong contradictions or conflicting ratings lead to Unable to Assess.")
-        st.markdown("**English training scope:** the full-article screening model uses the educational fauxNeuz RealFakeNews corpus. Its reported benchmark is a held-out split from the same dataset lineage, so it does not establish performance on all publishers, topics, or current news. The model score is not a truth probability. Hindi classification remains off by default because available training data has strong source/style confounding; local and optional live evidence retrieval remain available.")
+        st.markdown("**English classifier status:** paused by default after a label-quality audit found news reports marked FAKE and opinion content marked REAL in the fauxNeuz RealFakeNews source corpus. The dataset card itself cautions that entries may be inaccurate and advises against automated fact-checking without human oversight. A 90.9% score on a held-out split from that same corpus is therefore not a trustworthy estimate of real-world truth classification. The old PolitiFact claim model is also not a full-article classifier. Strong retrieved fact-check evidence may still inform a result; no match is not proof. Hindi classification remains off by default because available training data has source/style confounding.")

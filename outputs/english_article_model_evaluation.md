@@ -42,3 +42,7 @@ Confusion matrix (true rows; genuine, misleading columns):
 ## Limitations
 
 These metrics apply to this held-out benchmark split only. They do not establish accuracy across publishers, topics, dates, or current news. The source labels may be noisy, and the test set comes from the same dataset lineage as training. Treat the result as a model screening signal, not truth probability or verified fact-check. Independent publisher/time-disjoint evaluation is still needed.
+
+## Post-evaluation data-quality audit
+
+Manual inspection of the source dataset preview found wire-service reports (including Reuters stories) labeled `FAKE` and opinion/commentary pieces labeled `REAL`. The dataset card warns that labels may be inaccurate and says the dataset should not be used for automated fact-checking without human oversight. Therefore, despite the in-split score above, this artifact is **paused in the application by default**. Re-enable only for controlled experimentation with `MISINFO_ENABLE_UNVALIDATED_ENGLISH=1`; do not treat that as a recommended production setting. The English classifier should be retrained and evaluated on independently sourced, adjudicated labels before user-facing real/fake predictions resume.

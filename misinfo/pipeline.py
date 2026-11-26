@@ -263,6 +263,13 @@ def analyze_initial(text: str, language: str = "en", model: Any | None = None) -
     else:
         estimator = package
         thresholds = (0.35, 0.65)
+    # The current English full-article corpus contains demonstrably noisy labels
+    # (including wire reports marked FAKE). Keep both English classifiers out of
+    # user-facing decisions until a cleaner, independently audited corpus is used.
+    english_model_paused = language == "en" and os.getenv("MISINFO_ENABLE_UNVALIDATED_ENGLISH", "").strip().lower() not in {"1", "true", "yes"}
+    if english_model_paused:
+        article_estimator = None
+        estimator = None
 
     # The English article model is trained on complete articles. Do not feed it
     # isolated claim sentences or aggregate contradictory claim predictions.
@@ -327,6 +334,8 @@ def analyze_initial(text: str, language: str = "en", model: Any | None = None) -
         "claims": predictions,
         "extraction_summary": {"selected_claims": len(claims), "excluded_statements": excluded, "method": "rule-based factual-statement screening; verify extracted text and metadata"},
         "model_available": estimator is not None,
+        "model_scope": "evidence_only" if english_model_paused else "claim_level",
+        "model_status": "paused_noisy_training_labels" if english_model_paused else "available",
         "evidence_summary": {"matching_records": 0, "strong_matches": 0, "search_errors": [], "pending": True},
         "timings_ms": {"claim_extraction": extraction_ms, "model_load": model_load_ms, "classifier_inference": inference_ms, "total": round((time.perf_counter() - total_started) * 1000, 2)},
     }
@@ -358,6 +367,10 @@ def analyze(text: str, language: str = "en", model: Any | None = None) -> dict[s
     else:
         estimator = package
         thresholds = (0.35, 0.65)
+    english_model_paused = language == "en" and os.getenv("MISINFO_ENABLE_UNVALIDATED_ENGLISH", "").strip().lower() not in {"1", "true", "yes"}
+    if english_model_paused:
+        article_estimator = None
+        estimator = None
 
     assessments = []
     inference_ms = 0.0
@@ -474,7 +487,8 @@ def analyze(text: str, language: str = "en", model: Any | None = None) -> dict[s
     return {
         "label": overall, "classifier_label": overall_classifier,
         "confidence": None, "classifier_score": overall_score, "class_scores": article_prediction["class_scores"] if article_prediction else {},
-        "model_scope": "whole_article" if article_prediction else "claim_level",
+        "model_scope": "whole_article" if article_prediction else "evidence_only" if english_model_paused else "claim_level",
+        "model_status": "paused_noisy_training_labels" if english_model_paused else "available",
         "language": language, "explanation": explanation,
         "evidence_status": summary_status, "sources": all_matches,
         "candidate_claims": claims, "claims": assessments,
