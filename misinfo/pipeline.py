@@ -61,14 +61,28 @@ def _load_model_cached(model_path: str) -> Any | None:
 def load_model(path: str | None = None) -> Any | None:
     model_path = Path(path or os.getenv("MISINFO_MODEL_PATH", "models/misinformation_tfidf.joblib"))
     models = _load_model_cached(str(model_path.resolve()))
-    # This experimental Hindi artifact was trained on source-confounded data.
-    # It stays opt-in and is not loaded as the default Hindi news classifier.
+    # The Hindi model is available by default as an explicitly experimental
+    # whole-article screening signal, with its limitations shown in the UI.
     hindi_path = model_path.with_name("hindi_misinfo_experimental.joblib")
-    if os.getenv("MISINFO_ENABLE_EXPERIMENTAL_HINDI", "").strip().lower() in {"1", "true", "yes"} and isinstance(models, dict) and hindi_path.is_file():
+    if isinstance(models, dict) and hindi_path.is_file():
         hindi_package = _load_model_cached(str(hindi_path.resolve()))
         if isinstance(hindi_package, dict) and "estimator" in hindi_package:
             models["hi"] = hindi_package
     return models
+
+
+def _classifier_row_result(row: Any, classes: list[str], thresholds: tuple[float, float],
+                           threshold_class: str = "genuine") -> tuple[str, float, dict[str, float]]:
+    """Map probabilities with thresholds expressed for the documented class."""
+    p_genuine = float(row[classes.index("genuine")])
+    p_misleading = float(row[classes.index("misleading")])
+    low, high = thresholds
+    if threshold_class == "misleading":
+        label = "Potentially Misleading" if p_misleading >= high else "Likely Genuine" if p_misleading <= low else "Unable to Assess"
+    else:
+        label = "Likely Genuine" if p_genuine >= high else "Potentially Misleading" if p_genuine <= low else "Unable to Assess"
+    scores = {"Likely Genuine": round(p_genuine, 4), "Potentially Misleading": round(p_misleading, 4)}
+    return label, round(max(p_genuine, p_misleading), 4), scores
 
 
 def _sentence_score(sentence: str) -> float:
@@ -268,7 +282,10 @@ def analyze_initial(text: str, language: str = "en", model: Any | None = None) -
     model_load_ms = round((time.perf_counter() - model_started) * 1000, 2)
     package = models.get(language) if isinstance(models, dict) else models
     article_estimator = package.get("article_estimator") if language == "en" and isinstance(package, dict) else None
-    article_thresholds = tuple(package.get("article_thresholds", (0.45, 0.55))) if isinstance(package, dict) else (0.45, 0.55)
+    if language == "hi" and isinstance(package, dict) and package.get("experimental"):
+        article_estimator = package.get("estimator")
+    article_thresholds = tuple(package.get("article_thresholds", package.get("thresholds", (0.45, 0.55)))) if isinstance(package, dict) else (0.45, 0.55)
+    article_threshold_class = package.get("thresholds_for", "misleading" if language == "hi" else "genuine") if isinstance(package, dict) else "genuine"
     if isinstance(package, dict) and "estimator" in package:
         estimator = package["estimator"]
         thresholds = tuple(package.get("thresholds", (0.35, 0.65)))
@@ -291,23 +308,21 @@ def analyze_initial(text: str, language: str = "en", model: Any | None = None) -
             inference_started = time.perf_counter()
             row = article_estimator.predict_proba([normalized])[0]
             classes = list(article_estimator.classes_)
-            p_genuine = float(row[classes.index("genuine")])
-            misleading_cutoff, genuine_cutoff = article_thresholds
-            label = "Likely Genuine" if p_genuine >= genuine_cutoff else "Potentially Misleading" if p_genuine <= misleading_cutoff else "Unable to Assess"
-            score = round(max(p_genuine, 1 - p_genuine), 4)
+            label, score, class_scores = _classifier_row_result(row, classes, article_thresholds, article_threshold_class)
             inference_ms = round((time.perf_counter() - inference_started) * 1000, 2)
             predictions = [{"claim": claim, "classifier_label": label, "classifier_score": score,
-                            "class_scores": {"Likely Genuine": round(p_genuine, 4), "Potentially Misleading": round(1 - p_genuine, 4)}} for claim in claims]
+                            "class_scores": class_scores} for claim in claims]
             return {
                 "status": "preliminary", "label": "Unable to Assess", "preliminary_label": label,
                 "classifier_label": label, "confidence": None, "classifier_score": score,
-                "class_scores": {"Likely Genuine": round(p_genuine, 4), "Potentially Misleading": round(1 - p_genuine, 4)},
+                "class_scores": class_scores,
                 "language": language,
                 "explanation": "Preliminary whole-article model screening only. This score is not a probability of truth; fact-check evidence is still being retrieved.",
                 "evidence_status": "Evidence search pending.", "sources": [], "candidate_claims": claims,
                 "claims": predictions,
                 "extraction_summary": {"selected_claims": len(claims), "excluded_statements": excluded, "method": "rule-based factual-statement screening; verify extracted text and metadata"},
                 "model_available": True, "model_scope": "whole_article",
+                "experimental_model": bool(language == "hi" and isinstance(package, dict) and package.get("experimental")),
                 "evidence_summary": {"matching_records": 0, "strong_matches": 0, "search_errors": [], "pending": True},
                 "timings_ms": {"claim_extraction": extraction_ms, "model_load": model_load_ms, "classifier_inference": inference_ms, "total": round((time.perf_counter() - total_started) * 1000, 2)},
             }
@@ -322,12 +337,10 @@ def analyze_initial(text: str, language: str = "en", model: Any | None = None) -
             inference_started = time.perf_counter()
             probabilities = estimator.predict_proba(claims)
             classes = list(estimator.classes_)
-            true_index = classes.index("genuine")
-            misleading_cutoff, genuine_cutoff = thresholds
+            threshold_class = package.get("thresholds_for", "misleading" if language == "hi" else "genuine") if isinstance(package, dict) else "genuine"
             for claim_detail, row in zip(claim_details, probabilities):
-                p_genuine = float(row[true_index])
-                classifier_label = "Likely Genuine" if p_genuine >= genuine_cutoff else "Potentially Misleading" if p_genuine <= misleading_cutoff else "Unable to Assess"
-                predictions.append({"claim": claim_detail["text"], "classifier_label": classifier_label, "classifier_score": round(max(p_genuine, 1 - p_genuine), 4), "class_scores": {"Likely Genuine": round(p_genuine, 4), "Potentially Misleading": round(1 - p_genuine, 4)}})
+                classifier_label, classifier_score, class_scores = _classifier_row_result(row, classes, thresholds, threshold_class)
+                predictions.append({"claim": claim_detail["text"], "classifier_label": classifier_label, "classifier_score": classifier_score, "class_scores": class_scores})
             inference_ms = round((time.perf_counter() - inference_started) * 1000, 2)
         except (AttributeError, ValueError, TypeError, IndexError):
             logger.exception("Model preview prediction failed")
@@ -373,7 +386,10 @@ def analyze(text: str, language: str = "en", model: Any | None = None) -> dict[s
     model_load_ms = round((time.perf_counter() - model_started) * 1000, 2)
     package = models.get(language) if isinstance(models, dict) else models
     article_estimator = package.get("article_estimator") if language == "en" and isinstance(package, dict) else None
-    article_thresholds = tuple(package.get("article_thresholds", (0.45, 0.55))) if isinstance(package, dict) else (0.45, 0.55)
+    if language == "hi" and isinstance(package, dict) and package.get("experimental"):
+        article_estimator = package.get("estimator")
+    article_thresholds = tuple(package.get("article_thresholds", package.get("thresholds", (0.45, 0.55)))) if isinstance(package, dict) else (0.45, 0.55)
+    article_threshold_class = package.get("thresholds_for", "misleading" if language == "hi" else "genuine") if isinstance(package, dict) else "genuine"
     if isinstance(package, dict) and "estimator" in package:
         estimator = package["estimator"]
         thresholds = tuple(package.get("thresholds", (0.35, 0.65)))
@@ -396,16 +412,13 @@ def analyze(text: str, language: str = "en", model: Any | None = None) -> dict[s
             inference_started = time.perf_counter()
             row = article_estimator.predict_proba([normalized])[0]
             classes = list(article_estimator.classes_)
-            p_genuine = float(row[classes.index("genuine")])
-            low, high = article_thresholds
-            article_label = "Likely Genuine" if p_genuine >= high else "Potentially Misleading" if p_genuine <= low else "Unable to Assess"
-            article_prediction = {"label": article_label, "score": round(max(p_genuine, 1 - p_genuine), 4),
-                                  "class_scores": {"Likely Genuine": round(p_genuine, 4), "Potentially Misleading": round(1 - p_genuine, 4)}}
+            article_label, article_score, class_scores = _classifier_row_result(row, classes, article_thresholds, article_threshold_class)
+            article_prediction = {"label": article_label, "score": article_score, "class_scores": class_scores}
             inference_ms = round((time.perf_counter() - inference_started) * 1000, 2)
         except (AttributeError, ValueError, TypeError, IndexError):
             logger.exception("English article model prediction failed")
             return _unable("The installed English article model could not complete its prediction.")
-    if language == "en" and article_prediction is not None:
+    if article_prediction is not None:
         evidence_started = time.perf_counter()
         with ThreadPoolExecutor(max_workers=min(len(claims), 4), thread_name_prefix="evidence") as pool:
             evidence_results = list(pool.map(lambda claim: retrieve_evidence(claim, language), claims))
@@ -420,19 +433,17 @@ def analyze(text: str, language: str = "en", model: Any | None = None) -> dict[s
             probabilities = estimator.predict_proba(claims)
             inference_ms = round((time.perf_counter() - inference_started) * 1000, 2)
             classes = list(estimator.classes_)
-            true_index = classes.index("genuine")
-            misleading_cutoff, genuine_cutoff = thresholds
+            threshold_class = package.get("thresholds_for", "misleading" if language == "hi" else "genuine") if isinstance(package, dict) else "genuine"
             evidence_started = time.perf_counter()
             with ThreadPoolExecutor(max_workers=min(len(claims), 4), thread_name_prefix="evidence") as pool:
                 evidence_results = list(pool.map(lambda claim: retrieve_evidence(claim, language), claims))
             evidence_ms = round((time.perf_counter() - evidence_started) * 1000, 2)
             for claim_detail, row, evidence in zip(claim_details, probabilities, evidence_results):
                 claim = claim_detail["text"]
-                p_genuine = float(row[true_index])
-                classifier_label = "Likely Genuine" if p_genuine >= genuine_cutoff else "Potentially Misleading" if p_genuine <= misleading_cutoff else "Unable to Assess"
+                classifier_label, classifier_score, class_scores = _classifier_row_result(row, classes, thresholds, threshold_class)
                 evidence_assessment = _strong_evidence(evidence)
                 claim_label, decision = _combine_claim(classifier_label, evidence_assessment["verdict"])
-                assessments.append({"claim": claim, "label": claim_label, "classifier_label": classifier_label, "classifier_score": round(max(p_genuine, 1 - p_genuine), 4), "class_scores": {"Likely Genuine": round(p_genuine, 4), "Potentially Misleading": round(1 - p_genuine, 4)}, "extraction": {"kind": "factual_candidate", "metadata": {key: claim_detail[key] for key in ("entities", "dates", "quantities")}}, "evidence_assessment": evidence_assessment, "decision_reason": decision, "evidence": evidence})
+                assessments.append({"claim": claim, "label": claim_label, "classifier_label": classifier_label, "classifier_score": classifier_score, "class_scores": class_scores, "extraction": {"kind": "factual_candidate", "metadata": {key: claim_detail[key] for key in ("entities", "dates", "quantities")}}, "evidence_assessment": evidence_assessment, "decision_reason": decision, "evidence": evidence})
         except (AttributeError, ValueError, TypeError, IndexError):
             logger.exception("English model prediction failed")
             return _unable("The installed model could not complete its English prediction. Check the model version and retrain it.")
@@ -463,9 +474,12 @@ def analyze(text: str, language: str = "en", model: Any | None = None) -> dict[s
             explanation = "The whole-article model score falls between its validation-selected decision thresholds, and retrieved evidence does not resolve the result."
         else:
             overall = article_label
-            explanation = ("The whole-article English screening model leans genuine; no strong contradictory fact-check evidence was retrieved. "
-                           "This is a dataset-based screening result, not confirmation that every statement is true." if overall == "Likely Genuine" else
-                           "The whole-article English screening model flags this article as potentially misleading; no strong supporting fact-check evidence was retrieved. Review the individual claims and sources before concluding it is false.")
+            if overall == "Likely Genuine":
+                model_language = "Hindi" if language == "hi" else "English"
+                explanation = f"The whole-article {model_language} screening model leans genuine; no strong contradictory fact-check evidence was retrieved. This is a dataset-based screening result, not confirmation that every statement is true."
+            else:
+                model_language = "Hindi" if language == "hi" else "English"
+                explanation = f"The whole-article {model_language} screening model flags this article as potentially misleading; no strong supporting fact-check evidence was retrieved. Review the individual claims and sources before concluding it is false."
     elif clear_misleading:
         overall = "Potentially Misleading"
         explanation = "At least one claim is supported by a close negative fact-check record. Review that claim and its source; unverified claims are not treated as misleading solely from the model score."
@@ -506,6 +520,7 @@ def analyze(text: str, language: str = "en", model: Any | None = None) -> dict[s
         "label": overall, "classifier_label": overall_classifier,
         "confidence": None, "classifier_score": overall_score, "class_scores": article_prediction["class_scores"] if article_prediction else {},
         "model_scope": "whole_article" if article_prediction else "evidence_only" if english_model_paused else "claim_level",
+        "experimental_model": bool(language == "hi" and isinstance(package, dict) and package.get("experimental")),
         "model_status": "paused_noisy_training_labels" if english_model_paused else "available",
         "language": language, "explanation": explanation,
         "evidence_status": summary_status, "sources": all_matches,

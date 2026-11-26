@@ -5,6 +5,7 @@ __pycache__/
 models/*.joblib
 data/*.csv
 data/welfake/WELFake_Dataset.csv
+data/hindi_fr_news.zip
 data/*.xlsx
 data/x-fact/*.tsv
 .streamlit/secrets.toml
