@@ -141,7 +141,19 @@ def extract_article_claims(text: str, limit: int = 5) -> tuple[list[dict[str, An
             reason = "opinion_or_commentary" if OPINION_CUES.search(sentence) or SUBJECTIVE_START.search(sentence) else "not_selected_as_verifiable"
             excluded.append({"text": sentence, "reason": reason})
     eligible.sort(key=lambda item: (-item[2], item[0]))
-    chosen = sorted(eligible[:limit], key=lambda item: item[0])
+    # Articles sometimes repeat wire copy or paragraphs; avoid showing duplicate
+    # claims as separate evidence lookups/cards.
+    chosen: list[tuple[int, str, float]] = []
+    seen: set[str] = set()
+    for item in eligible:
+        canonical = " ".join(re.sub(r"[^\w\s]", " ", item[1].casefold(), flags=re.UNICODE).split())
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        chosen.append(item)
+        if len(chosen) >= limit:
+            break
+    chosen.sort(key=lambda item: item[0])
     claims = [{"text": sentence, "selection_score": round(score, 3), **_claim_metadata(sentence)} for _, sentence, score in chosen]
     return claims, excluded
 

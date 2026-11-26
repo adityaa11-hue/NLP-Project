@@ -210,6 +210,8 @@ if analyze_clicked:
         st.markdown("#### Model signal and evidence signal")
         if result.get("model_scope") == "whole_article":
             st.markdown('<div class="ms-panel-copy">The English classifier predicts from the complete article. Each extracted claim is shown separately for fact-check evidence; retrieved ratings can conflict with the article-level screening signal.</div>', unsafe_allow_html=True)
+        elif result.get("model_status") == "paused_noisy_training_labels":
+            st.warning("English classifier paused: the training corpus contains mislabeled examples. Claims below are checked against fact-check records only; an empty search is not evidence for either side.")
         else:
             st.markdown('<div class="ms-panel-copy">The classifier prediction and published fact-check ratings remain separate. Very close, interpretable evidence can support or conflict with a model result; conflicting signals lead to Unable to Assess.</div>', unsafe_allow_html=True)
         for index, claim in enumerate(result.get("claims", []), 1):
@@ -241,6 +243,8 @@ if analyze_clicked:
 
     with claims_tab:
         claims = result.get("claims", [])
+        if result.get("model_status") == "paused_noisy_training_labels":
+            st.warning("No claim-level classifier score is shown because the English classifier is paused after a training-label quality review. To search published fact-checks live, configure GOOGLE_FACT_CHECK_API_KEY in the app's Streamlit secrets.")
         if not claims:
             st.info(result["explanation"])
         for index, claim in enumerate(claims, 1):
@@ -254,6 +258,8 @@ if analyze_clicked:
                     st.caption(f"Classifier score: {claim['classifier_score']:.0%} · not a truth probability")
                 elif result.get("model_scope") == "whole_article":
                     st.caption("This claim is compared with fact-check evidence separately; the classifier score applies to the full article above.")
+                elif result.get("model_status") == "paused_noisy_training_labels":
+                    st.caption("Classifier score intentionally withheld: training labels were found to be unreliable.")
                 else:
                     st.caption("No reliable claim-level classifier score is available.")
                 metadata = claim.get("extraction", {}).get("metadata", {})
