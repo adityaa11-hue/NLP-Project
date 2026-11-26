@@ -168,7 +168,10 @@ if analyze_clicked:
     score = result.get("classifier_score")
     metric_cols[1].metric("Classifier score", f"{score:.0%}" if score is not None else "Not available")
     metric_cols[2].metric("Retrieved matches", result.get("evidence_summary", {}).get("matching_records", 0))
-    st.caption("Classifier score describes model confidence between learned classes. Evidence relevance describes text similarity. Neither is the probability a claim is true.")
+    if result.get("model_scope") == "whole_article":
+        st.caption("The English classifier scores the complete article. Its score is model confidence, not the probability that the article is true. Retrieved fact-check evidence is shown separately.")
+    else:
+        st.caption("Classifier score describes model confidence between learned classes. Evidence relevance describes text similarity. Neither is the probability a claim is true.")
 
     summary_tab, analysis_tab, claims_tab, sources_tab, method_tab = st.tabs(["Summary", "Detailed Analysis", "All Claims", "Sources", "Methodology"])
     with summary_tab:
@@ -199,7 +202,10 @@ if analyze_clicked:
 
     with analysis_tab:
         st.markdown("#### Model signal and evidence signal")
-        st.markdown('<div class="ms-panel-copy">The classifier prediction and published fact-check ratings remain separate. Very close, interpretable evidence can support or conflict with a model result; conflicting signals lead to Unable to Assess.</div>', unsafe_allow_html=True)
+        if result.get("model_scope") == "whole_article":
+            st.markdown('<div class="ms-panel-copy">The English classifier predicts from the complete article. Each extracted claim is shown separately for fact-check evidence; retrieved ratings can conflict with the article-level screening signal.</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="ms-panel-copy">The classifier prediction and published fact-check ratings remain separate. Very close, interpretable evidence can support or conflict with a model result; conflicting signals lead to Unable to Assess.</div>', unsafe_allow_html=True)
         for index, claim in enumerate(result.get("claims", []), 1):
             with st.container(border=True):
                 st.markdown(f"**Claim {index}** · {claim['label']}")
@@ -240,8 +246,10 @@ if analyze_clicked:
                 st.caption(f"Classifier: {claim.get('classifier_label', 'Unavailable')}")
                 if claim.get("classifier_score") is not None:
                     st.caption(f"Classifier score: {claim['classifier_score']:.0%} · not a truth probability")
+                elif result.get("model_scope") == "whole_article":
+                    st.caption("This claim is compared with fact-check evidence separately; the classifier score applies to the full article above.")
                 else:
-                    st.caption("No reliable Hindi classifier score is available.")
+                    st.caption("No reliable claim-level classifier score is available.")
                 metadata = claim.get("extraction", {}).get("metadata", {})
                 metadata_items = [(label, metadata.get(key, [])) for label, key in (("Entities", "entities"), ("Dates", "dates"), ("Quantities", "quantities")) if metadata.get(key)]
                 if metadata_items:
@@ -266,5 +274,5 @@ if analyze_clicked:
 
     with method_tab:
         st.markdown("#### How analysis works")
-        st.markdown("1. Split article text into literal sentences. A rule-based screen selects factual-looking candidates and lists opinions/commentary or other skipped statements separately; extracted entities, dates, and quantities are literal text cues, not a trained NER result.  \n2. English claim predictions use word and character TF-IDF with validation-selected Logistic Regression settings and a middle abstention band. The model is evaluated on a later temporal period.  \n3. Search X-FACT with word and character similarity, entity overlap, and quantity agreement. Optional Google Fact Check Tools API results are ranked the same way.  \n4. A search match is only related unless its wording/context is sufficiently close. Published ratings remain separate from model predictions; conflicts and weak evidence remain Unable to Assess.")
-        st.markdown("**Current scope:** English training uses PolitiFact claim statements, not full news articles. Hindi classification is off by default because the available model data has strong source/style confounding; local and optional live evidence retrieval remains available. This is a screening aid, not a fact-checking authority.")
+        st.markdown("1. The English article model analyzes the complete pasted article using word 1–2 gram hashing features and Logistic Regression; its three-way decision uses thresholds selected on a validation split.  \n2. A rule-based screen separately selects factual-looking sentences and lists opinions/commentary or other skipped statements; extracted entities, dates, and quantities are literal text cues, not trained NER.  \n3. Search X-FACT against those candidate claims using text similarity, entity overlap, and quantity agreement. Optional Google Fact Check Tools API results are ranked the same way.  \n4. A search match is only related unless its wording/context is sufficiently close. Fact-check ratings stay separate from the article model; strong contradictions or conflicting ratings lead to Unable to Assess.")
+        st.markdown("**English training scope:** the full-article screening model uses the educational fauxNeuz RealFakeNews corpus. Its reported benchmark is a held-out split from the same dataset lineage, so it does not establish performance on all publishers, topics, or current news. The model score is not a truth probability. Hindi classification remains off by default because available training data has strong source/style confounding; local and optional live evidence retrieval remain available.")

@@ -255,12 +255,45 @@ def analyze_initial(text: str, language: str = "en", model: Any | None = None) -
     models = model if model is not None else load_model()
     model_load_ms = round((time.perf_counter() - model_started) * 1000, 2)
     package = models.get(language) if isinstance(models, dict) else models
+    article_estimator = package.get("article_estimator") if language == "en" and isinstance(package, dict) else None
+    article_thresholds = tuple(package.get("article_thresholds", (0.45, 0.55))) if isinstance(package, dict) else (0.45, 0.55)
     if isinstance(package, dict) and "estimator" in package:
         estimator = package["estimator"]
         thresholds = tuple(package.get("thresholds", (0.35, 0.65)))
     else:
         estimator = package
         thresholds = (0.35, 0.65)
+
+    # The English article model is trained on complete articles. Do not feed it
+    # isolated claim sentences or aggregate contradictory claim predictions.
+    if article_estimator is not None:
+        try:
+            inference_started = time.perf_counter()
+            row = article_estimator.predict_proba([normalized])[0]
+            classes = list(article_estimator.classes_)
+            p_genuine = float(row[classes.index("genuine")])
+            misleading_cutoff, genuine_cutoff = article_thresholds
+            label = "Likely Genuine" if p_genuine >= genuine_cutoff else "Potentially Misleading" if p_genuine <= misleading_cutoff else "Unable to Assess"
+            score = round(max(p_genuine, 1 - p_genuine), 4)
+            inference_ms = round((time.perf_counter() - inference_started) * 1000, 2)
+            predictions = [{"claim": claim, "classifier_label": label, "classifier_score": score,
+                            "class_scores": {"Likely Genuine": round(p_genuine, 4), "Potentially Misleading": round(1 - p_genuine, 4)}} for claim in claims]
+            return {
+                "status": "preliminary", "label": "Unable to Assess", "preliminary_label": label,
+                "classifier_label": label, "confidence": None, "classifier_score": score,
+                "class_scores": {"Likely Genuine": round(p_genuine, 4), "Potentially Misleading": round(1 - p_genuine, 4)},
+                "language": language,
+                "explanation": "Preliminary whole-article model screening only. This score is not a probability of truth; fact-check evidence is still being retrieved.",
+                "evidence_status": "Evidence search pending.", "sources": [], "candidate_claims": claims,
+                "claims": predictions,
+                "extraction_summary": {"selected_claims": len(claims), "excluded_statements": excluded, "method": "rule-based factual-statement screening; verify extracted text and metadata"},
+                "model_available": True, "model_scope": "whole_article",
+                "evidence_summary": {"matching_records": 0, "strong_matches": 0, "search_errors": [], "pending": True},
+                "timings_ms": {"claim_extraction": extraction_ms, "model_load": model_load_ms, "classifier_inference": inference_ms, "total": round((time.perf_counter() - total_started) * 1000, 2)},
+            }
+        except (AttributeError, ValueError, TypeError, IndexError):
+            logger.exception("English article-model preview failed")
+            return _unable("The installed English article model could not complete its prediction.")
 
     predictions: list[dict[str, Any]] = []
     inference_ms = 0.0
@@ -317,6 +350,8 @@ def analyze(text: str, language: str = "en", model: Any | None = None) -> dict[s
     models = model if model is not None else load_model()
     model_load_ms = round((time.perf_counter() - model_started) * 1000, 2)
     package = models.get(language) if isinstance(models, dict) else models
+    article_estimator = package.get("article_estimator") if language == "en" and isinstance(package, dict) else None
+    article_thresholds = tuple(package.get("article_thresholds", (0.45, 0.55))) if isinstance(package, dict) else (0.45, 0.55)
     if isinstance(package, dict) and "estimator" in package:
         estimator = package["estimator"]
         thresholds = tuple(package.get("thresholds", (0.35, 0.65)))
@@ -327,7 +362,31 @@ def analyze(text: str, language: str = "en", model: Any | None = None) -> dict[s
     assessments = []
     inference_ms = 0.0
     evidence_ms = 0.0
-    if language in {"en", "hi"} and estimator is not None:
+    article_prediction: dict[str, Any] | None = None
+    if article_estimator is not None:
+        try:
+            inference_started = time.perf_counter()
+            row = article_estimator.predict_proba([normalized])[0]
+            classes = list(article_estimator.classes_)
+            p_genuine = float(row[classes.index("genuine")])
+            low, high = article_thresholds
+            article_label = "Likely Genuine" if p_genuine >= high else "Potentially Misleading" if p_genuine <= low else "Unable to Assess"
+            article_prediction = {"label": article_label, "score": round(max(p_genuine, 1 - p_genuine), 4),
+                                  "class_scores": {"Likely Genuine": round(p_genuine, 4), "Potentially Misleading": round(1 - p_genuine, 4)}}
+            inference_ms = round((time.perf_counter() - inference_started) * 1000, 2)
+        except (AttributeError, ValueError, TypeError, IndexError):
+            logger.exception("English article model prediction failed")
+            return _unable("The installed English article model could not complete its prediction.")
+    if language == "en" and article_prediction is not None:
+        evidence_started = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=min(len(claims), 4), thread_name_prefix="evidence") as pool:
+            evidence_results = list(pool.map(lambda claim: retrieve_evidence(claim, language), claims))
+        evidence_ms = round((time.perf_counter() - evidence_started) * 1000, 2)
+        for claim_detail, evidence in zip(claim_details, evidence_results):
+            evidence_assessment = _strong_evidence(evidence)
+            # Claim-level evidence is shown independently; the model predicts the full article.
+            assessments.append({"claim": claim_detail["text"], "label": "Unable to Assess", "classifier_label": "Article-level model", "classifier_score": None, "class_scores": {}, "extraction": {"kind": "factual_candidate", "metadata": {key: claim_detail[key] for key in ("entities", "dates", "quantities")}}, "evidence_assessment": evidence_assessment, "decision_reason": "The classifier scores the full article; this individual claim is assessed only against retrieved fact-check evidence.", "evidence": evidence})
+    elif language in {"en", "hi"} and estimator is not None:
         try:
             inference_started = time.perf_counter()
             probabilities = estimator.predict_proba(claims)
@@ -362,8 +421,24 @@ def analyze(text: str, language: str = "en", model: Any | None = None) -> dict[s
 
     clear_misleading = [item for item in assessments if item["label"] == "Potentially Misleading"]
     clear_genuine = [item for item in assessments if item["label"] == "Likely Genuine"]
-    conflicts = [item for item in assessments if item["evidence_assessment"]["verdict"] == "conflicting" or item["label"] == "Unable to Assess" and item["evidence_assessment"]["verdict"] in {"supports", "refutes"}]
-    if clear_misleading:
+    evidence_verdicts = [item["evidence_assessment"]["verdict"] for item in assessments]
+    conflicts = [item for item in assessments if item["evidence_assessment"]["verdict"] == "conflicting"]
+    if article_prediction is not None:
+        article_label = article_prediction["label"]
+        contradicts_genuine = article_label == "Likely Genuine" and "refutes" in evidence_verdicts
+        contradicts_misleading = article_label == "Potentially Misleading" and "supports" in evidence_verdicts
+        if conflicts or contradicts_genuine or contradicts_misleading:
+            overall = "Unable to Assess"
+            explanation = "The whole-article model and relevant fact-check evidence conflict, or the retrieved ratings conflict. Review the cited records before drawing a conclusion."
+        elif article_label == "Unable to Assess":
+            overall = article_label
+            explanation = "The whole-article model score falls between its validation-selected decision thresholds, and retrieved evidence does not resolve the result."
+        else:
+            overall = article_label
+            explanation = ("The whole-article English screening model leans genuine; no strong contradictory fact-check evidence was retrieved. "
+                           "This is a dataset-based screening result, not confirmation that every statement is true." if overall == "Likely Genuine" else
+                           "The whole-article English screening model flags this article as potentially misleading; no strong supporting fact-check evidence was retrieved. Review the individual claims and sources before concluding it is false.")
+    elif clear_misleading:
         overall = "Potentially Misleading"
         explanation = "At least one claim is supported by a close negative fact-check record. Review that claim and its source; unverified claims are not treated as misleading solely from the model score."
     elif conflicts:
@@ -392,17 +467,19 @@ def analyze(text: str, language: str = "en", model: Any | None = None) -> dict[s
         summary_status = "No sufficiently relevant fact-check record was found for the detected claims. No match is not a verdict."
     if language == "hi" and estimator is None:
         overall_classifier, overall_score = "Not trained for Hindi", None
+    elif article_prediction is not None:
+        overall_classifier, overall_score = article_prediction["label"], article_prediction["score"]
     else:
         overall_classifier, overall_score = _classifier_summary(classifier_labels, assessments)
     return {
         "label": overall, "classifier_label": overall_classifier,
-        "confidence": None, "classifier_score": overall_score, "class_scores": {},
+        "confidence": None, "classifier_score": overall_score, "class_scores": article_prediction["class_scores"] if article_prediction else {},
+        "model_scope": "whole_article" if article_prediction else "claim_level",
         "language": language, "explanation": explanation,
         "evidence_status": summary_status, "sources": all_matches,
         "candidate_claims": claims, "claims": assessments,
         "extraction_summary": {"selected_claims": len(claims), "excluded_statements": excluded_statements, "method": "rule-based factual-statement screening; verify extracted text and metadata"},
-        "extraction_summary": {"selected_claims": len(claims), "excluded_statements": excluded_statements, "method": "rule-based factual-statement screening; verify extracted text and metadata"},
-        "model_available": estimator is not None,
+        "model_available": article_prediction is not None or estimator is not None,
         "evidence_summary": {"matching_records": len(all_matches), "strong_matches": sum(item["evidence_assessment"]["strong_match_count"] for item in assessments), "search_errors": search_errors, "claim_search_statuses": search_states},
         "timings_ms": {"claim_extraction": extraction_ms, "model_load": model_load_ms, "classifier_inference": inference_ms, "evidence_retrieval": evidence_ms, "total": round((time.perf_counter() - total_started) * 1000, 2)},
     }
