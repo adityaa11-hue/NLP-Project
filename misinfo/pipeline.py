@@ -329,7 +329,7 @@ def analyze_initial(text: str, language: str = "en", model: Any | None = None) -
         "status": "preliminary", "label": "Unable to Assess", "preliminary_label": preliminary_label,
         "classifier_label": classifier_label, "confidence": None, "classifier_score": classifier_score,
         "class_scores": {}, "language": language,
-        "explanation": "Preliminary model signal only. Fact-check evidence is still being retrieved; this is not the final assessment.",
+        "explanation": ("The English classifier is paused because its training labels failed quality review. Fact-check evidence is still being retrieved." if english_model_paused else "Preliminary model signal only. Fact-check evidence is still being retrieved; this is not the final assessment."),
         "evidence_status": "Evidence search pending.", "sources": [], "candidate_claims": claims,
         "claims": predictions,
         "extraction_summary": {"selected_claims": len(claims), "excluded_statements": excluded, "method": "rule-based factual-statement screening; verify extracted text and metadata"},
@@ -464,7 +464,10 @@ def analyze(text: str, language: str = "en", model: Any | None = None) -> dict[s
                        f"{unresolved} claim(s) remain unverified. This is a screening result, not a guarantee that every detail is accurate.")
     else:
         overall = "Unable to Assess"
-        explanation = "The available model and fact-check search results do not support a cautious article-level assessment."
+        if english_model_paused:
+            explanation = "The English classifier is paused because its training corpus contains mislabeled examples, and no sufficiently close fact-check record was found. Live Google Fact Check search is not configured, so this article cannot be responsibly classified yet."
+        else:
+            explanation = "The available model and fact-check search results do not support a cautious article-level assessment."
 
     classifier_labels = [item["classifier_label"] for item in assessments]
     all_matches = [match for item in assessments for match in item["evidence"].get("matches", [])]

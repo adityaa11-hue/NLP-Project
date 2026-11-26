@@ -243,8 +243,26 @@ def _google_error_message(code: int, reason: str = "") -> str:
     return f"Google Fact Check API returned HTTP {code}." + (f" {reason[:160]}" if reason else "")
 
 
+def _google_api_key() -> str:
+    """Read the key from process env or Streamlit Cloud secrets without logging it."""
+    key = os.getenv("GOOGLE_FACT_CHECK_API_KEY", "").strip()
+    if key:
+        return key
+    try:
+        import streamlit as st
+        for name in ("GOOGLE_FACT_CHECK_API_KEY", "google_fact_check_api_key"):
+            value = st.secrets.get(name, "")
+            if value:
+                return str(value).strip()
+    except Exception as exc:
+        # Streamlit raises a secrets-file exception in local/API contexts when
+        # no secrets are configured. The evidence path remains usable offline.
+        logger.debug("Streamlit secrets unavailable for Google Fact Check (%s)", type(exc).__name__)
+    return ""
+
+
 def search_google(claim: str, language: str, api_key: str | None = None) -> dict:
-    key = api_key or os.getenv("GOOGLE_FACT_CHECK_API_KEY", "")
+    key = api_key or _google_api_key()
     if not key:
         return {"status": "not_configured", "results": [], "error": "Live Google Fact Check search is not configured."}
     if len(_canonical(claim)) < 12:

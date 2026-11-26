@@ -201,6 +201,8 @@ if analyze_clicked:
                 st.warning("English model predictions are paused: the training corpus contains mislabeled news examples. The app will use strong fact-check matches when available and otherwise return Unable to Assess, rather than present an unreliable real/fake label.")
             elif not result.get("model_available"):
                 st.warning("The English model could not be loaded. The assessment uses available retrieval evidence only.")
+            if any(claim.get("evidence", {}).get("google_status") == "not_configured" for claim in result.get("claims", [])):
+                st.info("Live Google Fact Check search is not configured for this app. Add GOOGLE_FACT_CHECK_API_KEY to the app's environment or Streamlit secrets to search published fact-checks; without a close match, the result can remain Unable to Assess.")
             if result.get("evidence_summary", {}).get("search_errors"):
                 st.error("Some evidence searches failed. Review the API/network details in Detailed Analysis.")
 
