@@ -4,6 +4,7 @@ __pycache__/
 *.py[cod]
 models/*.joblib
 data/*.csv
+data/welfake/WELFake_Dataset.csv
 data/*.xlsx
 data/x-fact/*.tsv
 .streamlit/secrets.toml

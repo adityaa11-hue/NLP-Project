@@ -275,10 +275,11 @@ def analyze_initial(text: str, language: str = "en", model: Any | None = None) -
     else:
         estimator = package
         thresholds = (0.35, 0.65)
-    # The current English full-article corpus contains demonstrably noisy labels
-    # (including wire reports marked FAKE). Keep both English classifiers out of
-    # user-facing decisions until a cleaner, independently audited corpus is used.
-    english_model_paused = language == "en" and os.getenv("MISINFO_ENABLE_UNVALIDATED_ENGLISH", "").strip().lower() not in {"1", "true", "yes"}
+    # Retain the safety gate for older model artifacts. A reviewed article model
+    # must explicitly opt in through package metadata before it can drive results.
+    opt_in_unvalidated = os.getenv("MISINFO_ENABLE_UNVALIDATED_ENGLISH", "").strip().lower() in {"1", "true", "yes"}
+    english_model_enabled = language == "en" and article_estimator is not None and (bool(package.get("article_model_enabled")) or opt_in_unvalidated)
+    english_model_paused = language == "en" and not english_model_enabled
     if english_model_paused:
         article_estimator = None
         estimator = None
@@ -379,7 +380,9 @@ def analyze(text: str, language: str = "en", model: Any | None = None) -> dict[s
     else:
         estimator = package
         thresholds = (0.35, 0.65)
-    english_model_paused = language == "en" and os.getenv("MISINFO_ENABLE_UNVALIDATED_ENGLISH", "").strip().lower() not in {"1", "true", "yes"}
+    opt_in_unvalidated = os.getenv("MISINFO_ENABLE_UNVALIDATED_ENGLISH", "").strip().lower() in {"1", "true", "yes"}
+    english_model_enabled = language == "en" and article_estimator is not None and (bool(package.get("article_model_enabled")) or opt_in_unvalidated)
+    english_model_paused = language == "en" and not english_model_enabled
     if english_model_paused:
         article_estimator = None
         estimator = None
